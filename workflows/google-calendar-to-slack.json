@@ -1,0 +1,154 @@
+{
+  "name": "Googleカレンダー 期間指定 → Slack通知",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "calendar-period",
+        "formTitle": "Googleカレンダー予定取得",
+        "formDescription": "取得したい期間を指定してください",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "開始日",
+              "fieldType": "date",
+              "requiredField": true,
+              "name": "開始日"
+            },
+            {
+              "fieldLabel": "終了日",
+              "fieldType": "date",
+              "requiredField": true,
+              "name": "終了日"
+            },
+            {
+              "fieldLabel": "通知するSlackチャンネル",
+              "fieldType": "text",
+              "requiredField": true,
+              "name": "通知するSlackチャンネル",
+              "fieldDefaultValue": "#general"
+            }
+          ]
+        },
+        "options": {
+          "respondWhen": "formSubmitted"
+        }
+      },
+      "id": "form-trigger",
+      "name": "期間指定フォーム",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.2,
+      "position": [240, 300],
+      "webhookId": "calendar-period"
+    },
+    {
+      "parameters": {
+        "resource": "event",
+        "operation": "getAll",
+        "calendar": {
+          "__rl": true,
+          "value": "primary",
+          "mode": "list"
+        },
+        "returnAll": false,
+        "limit": 100,
+        "timeMin": "={{ $json['開始日'] + 'T00:00:00+09:00' }}",
+        "timeMax": "={{ $json['終了日'] + 'T23:59:59+09:00' }}",
+        "options": {
+          "singleEvents": true,
+          "orderBy": "startTime"
+        }
+      },
+      "id": "google-calendar-1",
+      "name": "Google Calendar",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [460, 300],
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "YOUR_GOOGLE_CALENDAR_CREDENTIAL_ID",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// フォームから受け取った期間情報（日本語のキー）\nconst startDateStr = $json['開始日'];\nconst endDateStr = $json['終了日'];\nconst slackChannel = $json['通知するSlackチャンネル'] || '#general';\n\n// 日付をDateTimeオブジェクトに変換\nconst startDate = DateTime.fromISO(startDateStr);\nconst endDate = DateTime.fromISO(endDateStr);\n\n// 期間の表示形式を作成\nlet periodDisplay;\nif (startDate.hasSame(endDate, 'day')) {\n  periodDisplay = startDate.toFormat('yyyy年MM月dd日');\n} else if (startDate.hasSame(endDate, 'month')) {\n  periodDisplay = `${startDate.toFormat('yyyy年MM月dd日')}〜${endDate.toFormat('dd日')}`;\n} else if (startDate.hasSame(endDate, 'year')) {\n  periodDisplay = `${startDate.toFormat('yyyy年MM月dd日')}〜${endDate.toFormat('MM月dd日')}`;\n} else {\n  periodDisplay = `${startDate.toFormat('yyyy年MM月dd日')}〜${endDate.toFormat('yyyy年MM月dd日')}`;\n}\n\n// イベントデータを取得\nconst events = $input.all();\n\n// イベントが存在しない場合の処理\nif (!events || events.length === 0) {\n  return [{\n    json: {\n      message: `📅 ${periodDisplay}の予定\\n\\n予定がありません 🎉`,\n      eventCount: 0,\n      period: periodDisplay,\n      slackChannel: slackChannel\n    }\n  }];\n}\n\n// 日付別にイベントをグループ化\nconst eventsByDate = {};\n\nevents.forEach(item => {\n  const event = item.json;\n  const startTime = event.start?.dateTime || event.start?.date;\n  \n  if (!startTime) return;\n  \n  try {\n    const eventDate = DateTime.fromISO(startTime).setZone('Asia/Tokyo');\n    const dateKey = eventDate.toFormat('yyyy-MM-dd');\n    const dateDisplay = eventDate.toFormat('MM月dd日（ccc）', {locale: 'ja'});\n    \n    if (!eventsByDate[dateKey]) {\n      eventsByDate[dateKey] = {\n        display: dateDisplay,\n        events: []\n      };\n    }\n    \n    // 時間表示の決定\n    let timeDisplay;\n    if (event.start?.dateTime) {\n      const start = eventDate;\n      const end = event.end?.dateTime ? DateTime.fromISO(event.end.dateTime).setZone('Asia/Tokyo') : null;\n      \n      timeDisplay = end ? \n        `${start.toFormat('HH:mm')}-${end.toFormat('HH:mm')}` : \n        start.toFormat('HH:mm');\n    } else {\n      timeDisplay = '終日';\n    }\n    \n    const title = event.summary || '(タイトルなし)';\n    const location = event.location ? ` 📍${event.location}` : '';\n    \n    eventsByDate[dateKey].events.push(`  ⏰ ${timeDisplay} ${title}${location}`);\n  } catch (error) {\n    console.error('Error processing event:', error);\n  }\n});\n\n// メッセージを作成\nconst dateKeys = Object.keys(eventsByDate).sort();\nlet message = `📅 ${periodDisplay}の予定\\n\\n総予定数: ${events.length}件\\n`;\n\ndateKeys.forEach(dateKey => {\n  const dateData = eventsByDate[dateKey];\n  message += `\\n▶️ ${dateData.display} (${dateData.events.length}件)\\n`;\n  message += dateData.events.join('\\n') + '\\n';\n});\n\nreturn [{\n  json: {\n    message: message,\n    eventCount: events.length,\n    period: periodDisplay,\n    slackChannel: slackChannel\n  }\n}];"
+      },
+      "id": "code-1",
+      "name": "予定整形",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "={{ $json.slackChannel }}",
+          "mode": "name"
+        },
+        "messageType": "text",
+        "text": "={{ $json.message }}",
+        "otherOptions": {}
+      },
+      "id": "slack-1",
+      "name": "Slack通知",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [900, 300],
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "YOUR_SLACK_CREDENTIAL_ID",
+          "name": "Slack account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "期間指定フォーム": {
+      "main": [
+        [
+          {
+            "node": "Google Calendar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Calendar": {
+      "main": [
+        [
+          {
+            "node": "予定整形",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "予定整形": {
+      "main": [
+        [
+          {
+            "node": "Slack通知",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": {},
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2025-07-19T10:00:00.000Z",
+  "versionId": "1"
+}
